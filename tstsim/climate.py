@@ -55,8 +55,24 @@ SITES = {
 }
 
 
+def custom_profile(name: str, label: str, lat: float, lon: float, tmean, rain_mm, wet_days=None) -> SiteProfile:
+    """Build a SiteProfile from 12 monthly mean temperatures and rainfall totals.
+
+    If wet-day counts are not given they are estimated as rain/12 mm per wet day,
+    capped at 25 days, which is a rough rule of thumb for tropical rainfall.
+    """
+    tmean = tuple(float(x) for x in tmean)
+    rain_mm = tuple(max(0.0, float(x)) for x in rain_mm)
+    if len(tmean) != 12 or len(rain_mm) != 12:
+        raise ValueError("Need exactly 12 monthly values for temperature and rainfall")
+    if wet_days is None:
+        wet_days = tuple(min(25.0, r / 12.0) if r > 0 else 0.0 for r in rain_mm)
+    return SiteProfile(name=name, label=label, lat=float(lat), lon=float(lon),
+                       tmean=tmean, rain_mm=rain_mm, wet_days=tuple(float(x) for x in wet_days))
+
+
 def synthetic_weather(
-    site: str,
+    site,
     years: int = 4,
     start: str = "2021-01-01",
     seed: int = 0,
@@ -71,7 +87,7 @@ def synthetic_weather(
     the profile (times ``rain_scale``). ``warming_c`` adds a uniform offset,
     used for simple "what if warmer" scenarios.
     """
-    prof = SITES[site]
+    prof = site if isinstance(site, SiteProfile) else SITES[site]
     rng = np.random.default_rng(seed)
     dates = pd.date_range(start, periods=int(round(365.25 * years)), freq="D")
     month = dates.month.values - 1
@@ -111,20 +127,24 @@ def synthetic_weather(
             "tmax": tmax.round(2),
             "tmin": tmin.round(2),
             "rain": rain.round(2),
-            "site": site,
+            "site": prof.name,
             "synthetic": True,
         }
     )
 
 
 def load_nasa_power_csv(path: str, site: str = "custom") -> pd.DataFrame:
+    with open(path, encoding="utf-8") as fh:
+        return parse_nasa_power_text(fh.read(), site=site)
+
+
+def parse_nasa_power_text(text: str, site: str = "custom") -> pd.DataFrame:
     """Load a NASA POWER daily point CSV (parameters T2M, T2M_MAX, T2M_MIN,
     PRECTOTCORR) into the same schema as `synthetic_weather`.
 
     Handles the -BEGIN HEADER- / -END HEADER- block and the -999 fill value.
     """
-    with open(path, encoding="utf-8") as fh:
-        lines = fh.read().splitlines()
+    lines = text.splitlines()
     start = 0
     if lines and lines[0].startswith("-BEGIN HEADER-"):
         for i, line in enumerate(lines):

@@ -10,7 +10,7 @@ qualitative behaviour; they are not the published GLOWORM-FL or Q0
 parameterisations and must not be used to advise farmers.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 SYNTHETIC_NOTICE = (
     "SYNTHETIC DATA - illustrative parameters, not field observations. "

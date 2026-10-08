@@ -42,6 +42,8 @@ later answer:
 | `tstsim/flock.py` | An agent-based simulation of 60 farms with 3–8 goats each. Each goat has worm burdens split into drug-susceptible and drug-resistant genotypes, aggregated susceptibility, age and exposure-dependent immunity, packed cell volume (PCV) and body condition. Observable indicators are generated with noise: FAMACHA with scorer error, BCS, bottle jaw, dag, nasal discharge, and McMaster-style FEC. |
 | `tstsim/policies.py` | The management policies compared (see below). |
 | `tstsim/analysis.py` | The three experiments: indicator value-for-effort (farm-grouped CV), cross-climate shift test, and policy comparison over replicates. |
+| `tstsim/datasets.py` | Parsing, validation and storage of datasets you add (weather and check records). |
+| `tstsim/webapp/` | The local web interface: FastAPI server, background jobs, and a no-build HTML/JS front end with Chart.js (vendored, MIT). |
 
 The management policies are:
 
@@ -116,15 +118,88 @@ lists every parameter and its status.
 
 ## Run it
 
+### Web interface (recommended)
+
+With Docker Desktop running, from this folder:
+
 ```bash
-make install      # numpy, pandas, scikit-learn, matplotlib, pytest
-make test         # 21 tests, ~10 s
-make quick        # smoke run, ~1 min
-make results      # full run, ~5 min on 2 vCPU
-make docker       # same inside a container
+docker compose up --build
 ```
 
-### Real weather
+Then open **http://localhost:8000**. The first build takes a few minutes and
+runs the tests. Stop it with Ctrl+C.
+
+- Datasets you add are saved in `data/user/` on your computer, so they survive restarts.
+- The Overview page shows batch results from `outputs/`, if you have run `scripts/run_all.py`.
+
+Without Docker:
+
+```bash
+pip install -r requirements.txt
+python -m tstsim.webapp          # then open http://localhost:8000
+```
+
+The interface has five pages:
+
+| Page | What you can do |
+|---|---|
+| Overview | What the tool is, where to start, and the last batch results |
+| Datasets | Upload daily weather; upload goat check records; create synthetic sites from presets or your own monthly temperature and rainfall; preview, download and delete |
+| Climate | Compare up to four weather datasets: monthly and weekly transmission index, rainfall, temperature, and a warming slider |
+| Simulate | Run the treatment policies on any weather dataset, with replicates and advanced parameters. Optionally save the simulated check records as a new dataset |
+| Checks and triage | Score which indicator sets are worth their effort on any check records, and test whether a triage rule trained on one dataset transfers to others |
+
+It is a local tool with no login. The compose file binds it to this computer
+only; do not expose it to the internet. API documentation is at
+`/api/docs`.
+
+### Adding data
+
+**Weather.** You can upload either of these:
+
+- a NASA POWER daily point CSV, as downloaded (T2M, T2M_MAX, T2M_MIN,
+  PRECTOTCORR);
+- any CSV with a `date` column plus temperature and rainfall columns.
+  Common names are recognised: `tmean`, `tmax`, `tmin`, `rain`, `T2M`,
+  `precip`, `prcp`.
+
+Rules and handling:
+
+- You must enter the site's latitude, because day length enters the
+  evaporation estimate.
+- At least 120 days are needed.
+- Missing days are filled and implausible values are treated as missing.
+  Each fix is listed as a note on the dataset.
+
+**Check records.** One row per goat per check.
+
+- **Required:** `famacha` (1–5) and `need` (1 = needed treatment, 0 = did
+  not).
+- **Optional:** `bcs`, `bottle_jaw`, `dag`, `nasal`, `fec`, `farm`, `goat`,
+  `date`, `kid`.
+
+Notes:
+
+- Include `farm` so cross-validation keeps each farm's goats together.
+- If you link a weather dataset and the records have dates, the climate
+  index for each check date is added automatically.
+- Record how you defined `need` in the notes.
+
+Templates for both are downloadable from the Datasets page. Tick "synthetic"
+when uploading files that are not real observations, so they are labelled
+correctly everywhere.
+
+### Batch experiments and tests
+
+```bash
+make install      # all dependencies incl. pytest
+make test         # 37 tests, ~15 s
+make quick        # smoke run of the batch experiments, ~1 min
+make results      # full batch run, ~5 min on 2 vCPU; writes outputs/
+make docker-batch # the full batch run inside Docker
+```
+
+### Real weather from the command line
 
 The scripts below have not been run here because the build environment has
 no network access. The loader is tested against the NASA POWER CSV format.
@@ -168,3 +243,11 @@ python scripts/real_weather_tpi.py data/real/lilongwe.csv --lat -13.98
 - Bath GF, van Wyk JA (2009) The Five Point Check© for targeted selective treatment of internal parasites in small ruminants. *Small Ruminant Research* 86: 6–13.
 - Allen RG, Pereira LS, Raes D, Smith M (1998) Crop evapotranspiration. FAO Irrigation and Drainage Paper 56 (Hargreaves and Ra equations).
 
+## AI-assistance statement
+
+This code was written with substantial help from an AI assistant (Claude,
+Anthropic). The author directed the design and is responsible for reviewing,
+running and interpreting it. Disclose this wherever the repository is cited
+in an application.
+
+MIT licence.

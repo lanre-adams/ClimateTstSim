@@ -1,0 +1,9 @@
+services:
+  web:
+    build: .
+    image: climate-tst-sim
+    ports:
+      - "127.0.0.1:8000:8000"   # only reachable from this computer
+    volumes:
+      - ./data/user:/app/data/user   # datasets you add are kept here
+      - ./outputs:/app/outputs       # batch results shown on the Overview page
