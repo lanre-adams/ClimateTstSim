@@ -9,20 +9,42 @@ the public internet.
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .. import SYNTHETIC_NOTICE, __version__
 from ..climate import SITES
 from ..datasets import CHECKS_TEMPLATE, WEATHER_TEMPLATE, DatasetError, Registry, meta_dict
+from ..mcda import METHODS, OBJECTIVES, analyse, summary_to_frame
 from ..transmission import risk_band, transmission_potential
+from . import reports
 from .jobs import ADVANCED, POLICIES, JobManager, clean
+
+REPORT_LOCK = threading.Lock()  # matplotlib's pyplot is not thread-safe
+FORMATS = {"html", "csv", "json"}
+
+
+def _download(body: str, media: str, ext: str, stem: str) -> Response:
+    safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in stem)[:60] or "report"
+    return Response(body, media_type=f"{media}; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{safe}.{ext}"'})
+
+
+class TradeoffIn(BaseModel):
+    job_id: str | None = None
+    summary: list | None = None
+    method: str = "minmax"
+    weights: list[float] | None = None
+    reference: str | None = None
+    limits: dict[str, float | None] | None = None
+    compare: list[int] | None = None
 
 ROOT = Path(__file__).resolve().parents[2]
 STATIC = Path(__file__).resolve().parent / "static"
@@ -62,6 +84,8 @@ def create_app(data_dir: str | None = None) -> FastAPI:
             "policies": {k: v[0] for k, v in POLICIES.items()},
             "advanced": {k: {"min": lo, "max": hi} for k, (lo, hi) in ADVANCED.items()},
             "has_results": (OUTPUTS / "results.json").exists(),
+            "objectives": [o.__dict__ for o in OBJECTIVES],
+            "methods": METHODS,
         }
 
     @app.get("/api/results")
@@ -138,6 +162,18 @@ def create_app(data_dir: str | None = None) -> FastAPI:
     # ------------------------------------------------------------ climate
     @app.get("/api/climate/{ds_id}")
     def climate(ds_id: str, warming: float = 0.0):
+        return climate_data(ds_id, warming)
+
+    @app.get("/api/climate/{ds_id}/report")
+    def climate_report(ds_id: str, warming: float = 0.0, format: str = "html"):
+        if format not in FORMATS:
+            raise HTTPException(400, "format must be html, csv or json")
+        data = climate_data(ds_id, warming)
+        with REPORT_LOCK:
+            body, media, ext = reports.climate_report(data, format)
+        return _download(body, media, ext, f"climate_{data['name']}")
+
+    def climate_data(ds_id: str, warming: float = 0.0):
         meta = reg.get(ds_id)
         if meta.kind != "weather":
             raise DatasetError("Climate view needs a weather dataset.")
@@ -191,6 +227,61 @@ def create_app(data_dir: str | None = None) -> FastAPI:
         if j is None:
             raise HTTPException(404, "Job not found (the server may have restarted).")
         return j
+
+    def finished_job(job_id: str) -> dict:
+        j = jobs.get(job_id)
+        if j is None:
+            raise HTTPException(404, "Job not found (the server may have restarted). Run the analysis again.")
+        if j["status"] != "done":
+            raise HTTPException(409, "This job has not finished.")
+        return j
+
+    @app.post("/api/tradeoffs")
+    def tradeoffs(body: TradeoffIn):
+        summary = body.summary
+        if body.job_id:
+            j = finished_job(body.job_id)
+            if j["kind"] != "simulate":
+                raise DatasetError("Trade-offs need a simulation result.")
+            summary = j["result"]["summary"]
+        if not summary:
+            raise DatasetError("Run a simulation first.")
+        if body.method not in METHODS:
+            raise DatasetError(f"Unknown scaling method '{body.method}'.")
+        if body.weights is not None and len(body.weights) != len(OBJECTIVES):
+            raise DatasetError(f"Give {len(OBJECTIVES)} weights.")
+        try:
+            return clean(analyse(summary_to_frame(summary), method=body.method, weights=body.weights,
+                                 reference=body.reference, limits=body.limits,
+                                 compare=tuple(body.compare) if body.compare else None))
+        except ValueError as exc:
+            raise DatasetError(str(exc)) from exc
+
+    @app.get("/api/jobs/{job_id}/report")
+    def job_report(job_id: str, request: Request, format: str = "html"):
+        if format not in FORMATS:
+            raise HTTPException(400, "format must be html, csv or json")
+        j = finished_job(job_id)
+        res = j["result"]
+        with REPORT_LOCK:
+            if j["kind"] == "simulate":
+                try:
+                    settings = reports.tradeoff_settings(dict(request.query_params))
+                except ValueError as exc:
+                    raise DatasetError("Could not read the trade-off settings in the link.") from exc
+                if settings.get("method") and settings["method"] not in METHODS:
+                    raise DatasetError("Unknown scaling method.")
+                body, media, ext = reports.simulation_report(res, format, settings)
+                stem = f"simulation_{res['weather']['name']}"
+            elif j["kind"] == "indicators":
+                body, media, ext = reports.indicators_report(res, format)
+                stem = f"indicators_{res['dataset']['name']}"
+            elif j["kind"] == "triage":
+                body, media, ext = reports.triage_report(res, format)
+                stem = "triage_transfer"
+            else:
+                raise HTTPException(400, "No report for this kind of job.")
+        return _download(body, media, ext, stem)
 
     # ------------------------------------------------------------ static
     if OUTPUTS.exists():

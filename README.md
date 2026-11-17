@@ -42,8 +42,9 @@ later answer:
 | `tstsim/flock.py` | An agent-based simulation of 60 farms with 3–8 goats each. Each goat has worm burdens split into drug-susceptible and drug-resistant genotypes, aggregated susceptibility, age and exposure-dependent immunity, packed cell volume (PCV) and body condition. Observable indicators are generated with noise: FAMACHA with scorer error, BCS, bottle jaw, dag, nasal discharge, and McMaster-style FEC. |
 | `tstsim/policies.py` | The management policies compared (see below). |
 | `tstsim/analysis.py` | The three experiments: indicator value-for-effort (farm-grouped CV), cross-climate shift test, and policy comparison over replicates. |
+| `tstsim/mcda.py` | Multi-criteria trade-off analysis of policy outcomes: four normalisation methods, Pareto dominance, robustness to weights (4,000 random weightings), hard limits, and an argument-style "why A over B, and what would reverse it" explanation. |
 | `tstsim/datasets.py` | Parsing, validation and storage of datasets you add (weather and check records). |
-| `tstsim/webapp/` | The local web interface: FastAPI server, background jobs, and a no-build HTML/JS front end with Chart.js (vendored, MIT). |
+| `tstsim/webapp/` | The local web interface: FastAPI server, background jobs, downloadable reports (`reports.py`), and a no-build HTML/JS front end with Chart.js (vendored, MIT). |
 
 The management policies are:
 
@@ -60,19 +61,50 @@ illustrative production-impairing load that may not yet show as anaemia.
 
 ## Results (synthetic; full run, `make results`)
 
-### Policy trade-offs, Malawi-like site
+### Policy outcomes, Malawi-like site
 
 Ten replicate simulations, about 3.5 years each after a 180-day burn-in.
-Values are means, with 5th–95th percentiles in brackets.
+Values are means, with 5th–95th percentiles in brackets. Labour is checking
+time plus about 2 minutes per dose.
 
-| Policy | Deaths /100 goat-yr | Doses /goat-yr | Check min /goat-yr | Resistant share at end |
-|---|---|---|---|---|
-| No treatment | 10.0 (6.2–15.0) | 0 | 0 | 0.02 |
-| Whole flock / 60 d | 4.2 (1.8–7.5) | 6.0 | 0 | 1.00 |
-| FAMACHA only, 14 d | 2.0 (0.7–3.6) | 0.70 | 26 | 0.76 (0.66–0.85) |
-| 5-point-style, 14 d | 2.2 (0.7–4.2) | 1.20 | 60 | 0.89 |
-| 5-point-style, climate-gated | 2.2 (0.8–3.7) | 0.93 | 43 | 0.82 |
-| Model triage, climate-gated | 2.1 (0.7–3.8) | 0.88 | 43 | 0.81 |
+| Policy | Deaths /100 goat-yr | Anaemic goat-days | Doses /goat-yr | Labour min /goat-yr | Resistant share at end |
+|---|---|---|---|---|---|
+| No treatment | 10.0 (6.2–15.0) | 3.8% | 0 | 0 | 0.02 |
+| Whole flock / 60 d | 4.2 (1.8–7.5) | 1.6% | 6.0 | 12 | 1.00 |
+| FAMACHA only, 14 d | 1.9 (0.8–3.8) | 1.9% | 0.70 | 27 | 0.77 (0.65–0.85) |
+| 5-point-style, 14 d | 2.1 (0.8–3.8) | 1.8% | 1.18 | 62 | 0.88 |
+| 5-point-style, climate-gated | 2.1 (0.8–3.8) | 2.0% | 0.95 | 45 | 0.83 |
+| Model triage, climate-gated | 2.0 (0.7–3.7) | 1.4% | 0.88 | 45 | 0.82 |
+
+### Multi-criteria view (new in v0.3.0)
+
+Each policy is treated as an option and each outcome as a separate objective:
+deaths (animal health), anaemic goat-days (welfare), doses (drug use),
+labour (cost to the farmer) and resistance (long-term sustainability).
+
+| Scaling method | First with equal weights, all six policies | First when no policy may have more deaths than whole-flock treatment |
+|---|---|---|
+| Min–max | FAMACHA only | Model triage |
+| Reference (whole flock) | No treatment | FAMACHA only |
+| Target | FAMACHA only | FAMACHA only |
+| Rank | FAMACHA only | FAMACHA only |
+
+- **Four of six policies are Pareto-optimal.** Both five-point-style policies
+  are dominated (by the model triage rule, and the climate-gated one also by
+  FAMACHA only). That partly reflects how weak the extra checks are by
+  construction here (see point 3 below).
+- **The scaling method changes the winner.** Under reference scaling,
+  "No treatment" wins in 78% of random weightings, despite five times the
+  deaths of FAMACHA-only. At the SE Nigeria-like site it ranks first under
+  three of four scalings with equal weights.
+- **A hard limit changes the question.** Ruling out any policy with more
+  deaths than whole-flock treatment removes "No treatment". Under min–max the
+  winner then flips from FAMACHA-only to the model triage rule, because
+  min–max scores depend on which options are in the comparison set
+  (rank reversal).
+- **Explanations are checkable.** With the limit and equal weights, the
+  model triage rule beats FAMACHA-only mainly on anaemic goat-days; the
+  ranking reverses if labour carries at least 28% of the weight.
 
 ### What the simulator says, given its assumptions
 
@@ -92,10 +124,10 @@ Values are means, with 5th–95th percentiles in brackets.
    to ask of real data.
 4. **The triage rule did not transfer cleanly between climates.** The
    threshold was chosen to reach about 90% sensitivity on Malawi-like farms.
-   - Northern Nigeria-like site: sensitivity fell to 0.75.
+   - Northern Nigeria-like site: sensitivity fell to 0.78.
    - SE Nigeria-like site: the model under-predicted prevalence (0.14
      predicted vs 0.16 observed), and as a policy it gave more doses than the
-     rule-based check (5.0 vs 4.3 per goat-year).
+     rule-based check (5.0 vs 4.4 per goat-year).
 
    Local recalibration is needed. How to do that with few labels is a
    research question in its own right.
@@ -112,6 +144,7 @@ Figures are in `outputs/`:
 - `fig3` / `fig3b` — policy trade-offs
 - `fig4` — resistance over time
 - `fig5` — shift test
+- `fig6` / `fig6b` — multi-criteria view (scaled outcomes, first-place share by scaling method)
 
 All numbers are in `outputs/results.json` and the CSVs. `docs/PARAMETERS.md`
 lists every parameter and its status.
@@ -146,8 +179,13 @@ The interface has five pages:
 | Overview | What the tool is, where to start, and the last batch results |
 | Datasets | Upload daily weather; upload goat check records; create synthetic sites from presets or your own monthly temperature and rainfall; preview, download and delete |
 | Climate | Compare up to four weather datasets: monthly and weekly transmission index, rainfall, temperature, and a warming slider |
-| Simulate | Run the treatment policies on any weather dataset, with replicates and advanced parameters. Optionally save the simulated check records as a new dataset |
+| Simulate | Run the treatment policies on any weather dataset, with replicates and advanced parameters. Then weigh the trade-offs: choose a scaling method, set how much each outcome matters, optionally rule out policies with more deaths than current practice, and ask why one policy ranks above another. Optionally save the simulated check records as a new dataset |
 | Checks and triage | Score which indicator sets are worth their effort on any check records, and test whether a triage rule trained on one dataset transfers to others |
+
+**Reports.** Every analysis can be downloaded: an HTML report (tables,
+charts, settings and, for simulations, the trade-off analysis with your
+chosen scaling, weights and limit), the results table as CSV, or everything
+as JSON. Open the HTML report in a browser and use Print to save it as PDF.
 
 It is a local tool with no login. The compose file binds it to this computer
 only; do not expose it to the internet. API documentation is at
@@ -193,7 +231,7 @@ correctly everywhere.
 
 ```bash
 make install      # all dependencies incl. pytest
-make test         # 37 tests, ~15 s
+make test         # 45 tests, ~20 s
 make quick        # smoke run of the batch experiments, ~1 min
 make results      # full batch run, ~5 min on 2 vCPU; writes outputs/
 make docker-batch # the full batch run inside Docker
@@ -208,6 +246,17 @@ no network access. The loader is tested against the NASA POWER CSV format.
 python scripts/fetch_nasa_power.py --lat -13.98 --lon 33.78 --start 2015 --end 2024 --out data/real/lilongwe.csv
 python scripts/real_weather_tpi.py data/real/lilongwe.csv --lat -13.98
 ```
+
+## Changes in v0.3.0
+
+- **Labour now includes dosing time** (about 2 minutes per dose). Before,
+  whole-flock treatment showed zero labour, which flattered it.
+- **Anaemic goat-days** is reported alongside deaths as a welfare outcome.
+- **Fixes:** replacement kids now start with no treatment history (they
+  inherited the dead goat's), and faecal egg counts use the same density
+  dependence as egg output to pasture.
+- **New:** multi-criteria trade-off module, Trade-offs panel in the web app,
+  downloadable HTML/CSV/JSON reports, and figure 6. Eight new tests.
 
 ## Honest limits
 
@@ -242,3 +291,12 @@ python scripts/real_weather_tpi.py data/real/lilongwe.csv --lat -13.98
 - van Wyk JA, Bath GF (2002) The FAMACHA system for managing haemonchosis in sheep and goats by clinically identifying individual animals for treatment. *Veterinary Research* 33: 509–529.
 - Bath GF, van Wyk JA (2009) The Five Point Check© for targeted selective treatment of internal parasites in small ruminants. *Small Ruminant Research* 86: 6–13.
 - Allen RG, Pereira LS, Raes D, Smith M (1998) Crop evapotranspiration. FAO Irrigation and Drainage Paper 56 (Hargreaves and Ra equations).
+
+## AI-assistance statement
+
+This code was written with substantial help from an AI assistant (Claude,
+Anthropic). The author directed the design and is responsible for reviewing,
+running and interpreting it. Disclose this wherever the repository is cited
+in an application.
+
+MIT licence.

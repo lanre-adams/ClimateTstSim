@@ -183,3 +183,18 @@ summary { cursor: pointer; font-weight: 600; font-size: 14px; }
 }
 #toast.show { opacity: 1; }
 .empty { padding: 26px; text-align: left; color: var(--muted); border: 1px dashed var(--rule-strong); border-radius: 6px; }
+
+/* ---------- downloads and trade-offs */
+.downloads { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin: 16px 0 8px; padding: 12px 14px;
+  border: 1px dashed var(--rule-strong); border-radius: 8px; background: var(--panel); }
+.downloads .button { text-decoration: none; }
+.weights { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px 20px; }
+.weights output { font-weight: 600; color: var(--ink); }
+ol.rank { list-style: none; padding: 0; margin: 8px 0 0; display: flex; flex-direction: column; gap: 8px; }
+ol.rank li { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(60px, 1fr) 48px; gap: 10px; align-items: center; font-size: 14px; }
+.rank-name { min-width: 0; overflow-wrap: anywhere; }
+.rank-bar { height: 10px; background: var(--grid); border-radius: 5px; overflow: hidden; }
+.rank-bar span { display: block; height: 100%; border-radius: 5px; }
+.rank-val { text-align: right; font-variant-numeric: tabular-nums; }
+td.heat { background: color-mix(in srgb, var(--ok-rule) calc(var(--h) * 38%), transparent); }
+tr.hl td { font-weight: 600; }

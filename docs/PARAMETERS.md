@@ -53,6 +53,20 @@ substantive claim is made.
 | Dag | 0.3 | I |
 | Nasal discharge | 0.2 | I |
 | FEC (lab, incl. sampling and transport) | 20 equivalent | I |
+| Giving one dose (catch, estimate weight, drench) | 2.0 (`flock.DOSE_MINUTES`) | I |
+
+Labour per goat-year = checking minutes + dosing minutes. Before v0.3.0 only
+checking time was counted, which made whole-flock dosing look free of labour.
+
+## Multi-criteria analysis (`tstsim/mcda.py`)
+
+| Item | Value | Status |
+|---|---|---|
+| Objectives (all minimised) | deaths per 100 goat-years; % goat-days anaemic; doses per goat-year; labour minutes per goat-year; resistant share at the end | Design choice |
+| Targets for target scaling | 2 deaths; 1.5% anaemic; 1 dose; 30 min; 0.5 resistant | I |
+| Reference for reference scaling | Whole flock every 60 days (current practice); score = 1/(1 + value/reference) | Design choice |
+| Weight sampling | 4,000 draws, uniform on the simplex (Dirichlet(1)), seed 42 | Design choice |
+| Default hard limit in the batch run | deaths no higher than whole-flock treatment | Design choice |
 
 ## Tuning record
 

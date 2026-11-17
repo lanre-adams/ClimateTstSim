@@ -157,7 +157,7 @@ class JobManager:
 
         runs = pd.DataFrame(rows)
         metrics = ["deaths_per_100_goat_years", "treatments_per_goat_year", "check_minutes_per_goat_year",
-                   "pct_goat_days_anaemic", "final_resistant_frac"]
+                   "labour_minutes_per_goat_year", "pct_goat_days_anaemic", "final_resistant_frac"]
         summary = []
         for k in keys:
             sub = runs[runs.key == k]

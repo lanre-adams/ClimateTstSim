@@ -204,7 +204,7 @@ def policy_comparison(site: str, seeds, triage=None, years: int = 4, warming_c: 
 def summarise_policies(df: pd.DataFrame) -> pd.DataFrame:
     metrics = [
         "deaths_per_100_goat_years", "treatments_per_goat_year", "check_minutes_per_goat_year",
-        "pct_goat_days_anaemic", "final_resistant_frac",
+        "labour_minutes_per_goat_year", "pct_goat_days_anaemic", "final_resistant_frac",
     ]
     g = df.groupby("policy", sort=False)[metrics]
     mean = g.mean().add_suffix("_mean")

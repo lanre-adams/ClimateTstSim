@@ -21,13 +21,14 @@ import numpy as np
 import pandas as pd
 
 from .climate import SITES
-from .transmission import daily_rates, transmission_potential
+from .transmission import daily_rates, risk_band, transmission_potential
 
 # FAMACHA categories by PCV (%), after van Wyk & Bath (2002):
 # 1: >=28, 2: 23-27, 3: 18-22, 4: 13-17, 5: <=12
 FAMACHA_EDGES = np.array([12.5, 17.5, 22.5, 27.5])
 NEED_PCV = 17.5     # anaemic: true FAMACHA 4 or 5
 NEED_WORMS = 2000.0  # illustrative burden likely to impair production before anaemia shows
+DOSE_MINUTES = 2.0   # illustrative: catch, weigh or estimate, and drench one goat
 # Ground truth "would benefit from treatment" = anaemic OR burden >= NEED_WORMS.
 
 
@@ -113,8 +114,6 @@ def simulate(
 
     rates = daily_rates(weather, lat)
     tpi = transmission_potential(weather, lat).values
-    from .transmission import risk_band
-
     band = risk_band(tpi)
     dry = _dryness(weather)
     n_days = len(weather)
@@ -135,7 +134,6 @@ def simulate(
     alive = np.ones(n, bool)
     dead_since = np.full(n, -1)
     last_treat = np.full(n, -10_000)
-    low_streak = np.zeros(n, int)
 
     # farm pools by genotype: eggs E, faecal L3 F, herbage L3 H  (shape: farms x 2)
     E = np.zeros((p.n_farms, 2))
@@ -215,6 +213,7 @@ def simulate(
             ws[rep] = wr[rep] = 0.0
             pcv[rep] = pcv_own[rep]
             bcs[rep] = 3.0
+            last_treat[rep] = -10_000  # a replacement kid has no treatment history
             dead_since[rep] = -1
 
         need = alive & (pcv < NEED_PCV)
@@ -276,6 +275,8 @@ def simulate(
         "treatments_per_goat_year": treatments / max(goat_years, 1e-9),
         "checks_per_goat_year": checks_done / max(goat_years, 1e-9),
         "check_minutes_per_goat_year": checks_done * policy.check_minutes / max(goat_years, 1e-9),
+        "labour_minutes_per_goat_year": (checks_done * policy.check_minutes + treatments * DOSE_MINUTES)
+        / max(goat_years, 1e-9),
         "pct_goat_days_anaemic": 100 * anaemic_days / max(goat_days, 1),
         "final_resistant_frac": float(daily["worm_resistant_frac"].iloc[-30:].mean()) if len(daily) else np.nan,
     }
@@ -295,7 +296,8 @@ def observe(idx, pcv, bcs, worms, kid, dryness, tpi_today, day, last_treat, rng,
     dag_p = 0.05 + 0.10 * (1 - dryness) + 0.15 * (worms[idx] > 3000)
     dag = rng.random(k) < dag_p
     nasal = rng.random(k) < (0.08 + 0.06 * dryness)
-    true_epg = worms[idx] * p.fecundity / p.faecal_g_per_day
+    dd = 1.0 / (1.0 + worms[idx] / p.fecundity_dd)  # same density dependence as pasture egg output
+    true_epg = worms[idx] * dd * p.fecundity / p.faecal_g_per_day
     sampled = true_epg * rng.gamma(2.0, 0.5, k)
     fec = rng.poisson(sampled / 50.0) * 50
     return pd.DataFrame(

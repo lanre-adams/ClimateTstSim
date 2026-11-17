@@ -202,3 +202,50 @@ def test_parse_semicolon_separated_weather():
     raw = _weather_csv(days=150).decode().replace(",", ";").encode()
     df, _ = parse_weather(raw)
     assert len(df) == 150
+
+
+def test_tradeoffs_and_reports(client):
+    job = client.post("/api/simulate", json={"weather_id": "builtin-lilongwe_like",
+                                             "policies": ["none", "whole60", "famacha14"],
+                                             "replicates": 2, "n_farms": 10}).json()
+    j = _wait(client, job)
+    assert j["status"] == "done", j.get("error")
+    s = j["result"]["summary"][0]
+    assert "labour_minutes_per_goat_year" in s and s["labour_minutes_per_goat_year"]["mean"] == 0
+    wf = [x for x in j["result"]["summary"] if x["key"] == "whole60"][0]
+    assert wf["labour_minutes_per_goat_year"]["mean"] > 0  # dosing now costs time
+
+    t = client.post("/api/tradeoffs", json={"job_id": job["id"], "method": "rank", "weights": [3, 1, 1, 1, 1]})
+    assert t.status_code == 200, t.text
+    m = t.json()
+    assert len(m["ranking"]) == 3 and m["explanation"]["text"]
+    lim = client.post("/api/tradeoffs", json={"job_id": job["id"], "limits": {
+        "deaths_per_100_goat_years": wf["deaths_per_100_goat_years"]["mean"]}}).json()
+    assert "No treatment" not in lim["ranking"]
+    bad = client.post("/api/tradeoffs", json={"job_id": job["id"], "weights": [1, 1]})
+    assert bad.status_code == 400
+
+    base = f"/api/jobs/{job['id']}/report"
+    h = client.get(f"{base}?format=html&method=target&weights=1,1,1,1,1")
+    assert h.status_code == 200 and h.headers["content-type"].startswith("text/html")
+    assert "attachment" in h.headers["content-disposition"] and "Multi-criteria trade-offs" in h.text
+    assert "data:image/png;base64," in h.text
+    c = client.get(f"{base}?format=csv")
+    assert c.text.startswith("policy,") and "weighted_score" in c.text.splitlines()[0]
+    js = client.get(f"{base}?format=json").json()
+    assert js["tradeoffs"]["policies"] and js["simulation"]["summary"]
+    assert client.get(f"{base}?format=pdf").status_code == 400
+    assert client.get("/api/jobs/nope/report").status_code == 404
+
+
+def test_climate_and_checks_reports(client):
+    r = client.get("/api/climate/builtin-uyo_like/report?format=html&warming=1")
+    assert r.status_code == 200 and "Transmission index by month" in r.text
+    assert client.get("/api/climate/builtin-uyo_like/report?format=csv").text.startswith("month,")
+    up = client.post("/api/datasets/checks", data={"name": "Field"},
+                     files={"file": ("c.csv", _checks_csv(), "text/csv")}).json()
+    ind = client.post("/api/indicators", json={"dataset_id": up["id"]}).json()
+    assert _wait(client, ind)["status"] == "done"
+    rep = client.get(f"/api/jobs/{ind['id']}/report?format=html")
+    assert rep.status_code == 200 and "Indicator value for effort" in rep.text
+    assert client.get(f"/api/jobs/{ind['id']}/report?format=csv").text.startswith("indicator_set,")

@@ -27,6 +27,7 @@ from tstsim.analysis import (  # noqa: E402
     policy_comparison, summarise_policies,
 )
 from tstsim.climate import SITES, synthetic_weather  # noqa: E402
+from tstsim.mcda import METHODS, OBJECTIVES, analyse  # noqa: E402
 from tstsim.transmission import transmission_potential  # noqa: E402
 
 # Reference categorical palette (light mode), fixed order
@@ -116,12 +117,13 @@ SHORT = {
 def fig_policies(summ: pd.DataFrame, out: Path, site_label: str, fname: str):
     panels = [
         ("deaths_per_100_goat_years", "Deaths /100 goat-yr"),
+        ("pct_goat_days_anaemic", "Anaemic goat-days, %"),
         ("treatments_per_goat_year", "Doses /goat-yr"),
-        ("check_minutes_per_goat_year", "Check minutes /goat-yr"),
+        ("labour_minutes_per_goat_year", "Labour min /goat-yr"),
         ("final_resistant_frac", "Resistant share (end)"),
     ]
     labels = [SHORT.get(p, p) for p in summ.policy]
-    fig, axes = plt.subplots(1, 4, figsize=(8.6, 3.0), sharey=True)
+    fig, axes = plt.subplots(1, 5, figsize=(10.2, 3.0), sharey=True)
     ypos = np.arange(len(labels))[::-1]
     for ax, (m, title) in zip(axes, panels):
         mean = summ[f"{m}_mean"].values
@@ -134,6 +136,48 @@ def fig_policies(summ: pd.DataFrame, out: Path, site_label: str, fname: str):
     fig.suptitle(f"Policy trade-offs ({site_label}); bars = mean, whiskers = 5th-95th pct over replicates",
                  fontsize=8.5, color=INK2, y=1.02)
     stamp(fig)
+    fig.savefig(out / fname)
+    plt.close(fig)
+
+
+def mean_table(summ: pd.DataFrame) -> pd.DataFrame:
+    cols = {f"{o.key}_mean": o.key for o in OBJECTIVES}
+    return summ[["policy", *cols]].rename(columns=cols)
+
+
+def fig_tradeoffs(mc: dict, out: Path, site_label: str, fname: str):
+    """Heatmap of min-max scores with raw values, plus first-place share by normalisation."""
+    pols = mc["policies"]
+    labels = [SHORT.get(p, p) for p in pols]
+    G = np.array(mc["goodness"])
+    V = np.array(mc["values"])
+    fig, axes = plt.subplots(1, 2, figsize=(10.2, 3.6), gridspec_kw={"width_ratios": [3.2, 2], "wspace": 0.08})
+    ax = axes[0]
+    ax.imshow(G, cmap="Greens", vmin=0, vmax=1.15, aspect="auto")
+    ax.set_xticks(range(len(OBJECTIVES)), [o.label for o in OBJECTIVES], fontsize=7.5)
+    ax.set_yticks(range(len(pols)), [("* " if p else "   ") + l for l, p in zip(labels, mc["pareto"])], fontsize=7.5)
+    for i in range(G.shape[0]):
+        for j, o in enumerate(OBJECTIVES):
+            ax.text(j, i, f"{V[i, j]:.{o.digits}f}", ha="center", va="center", fontsize=7,
+                    color="white" if G[i, j] > 0.7 else INK)
+    ax.grid(False)
+    ax.set_title("Outcomes (darker = better, min-max scaled); * = Pareto-optimal", fontsize=8.5)
+    ax2 = axes[1]
+    meths = list(METHODS)
+    y = np.arange(len(pols))[::-1]
+    h = 0.8 / len(meths)
+    for k, mth in enumerate(meths):
+        acc = mc["by_method"][mth]["acceptability"]
+        ax2.barh(y + (len(meths) / 2 - k - 0.5) * h, acc, height=h, color=C[k], label=mth)
+    ax2.set_yticks(y, [""] * len(labels))
+    ax2.set_ylim(-0.5, len(pols) - 0.5)
+    ax2.set_xlim(0, 1)
+    ax2.set_xlabel("Share of 4,000 random weightings where it ranks first", fontsize=7.5)
+    ax2.set_title("How often each policy comes first, by scaling method", fontsize=8.5)
+    ax2.legend(frameon=False, fontsize=7, loc="lower right")
+    ax2.grid(axis="y", visible=False)
+    fig.suptitle(f"Multi-criteria view of the policy outcomes ({site_label})", fontsize=9, y=1.02)
+    fig.text(0.99, -0.06, "SYNTHETIC - illustrative parameters", ha="right", va="bottom", fontsize=7, color=INK2)
     fig.savefig(out / fname)
     plt.close(fig)
 
@@ -218,10 +262,21 @@ def main():
     fig_policies(summ, out, "Malawi-like site", "fig3_policy_tradeoffs.png")
     fig_resistance(daily, out)
 
+    mt = mean_table(summ)
+    mc = analyse(mt)
+    fig_tradeoffs(mc, out, "Malawi-like site", "fig6_multicriteria_malawi_like.png")
+    death_limit = float(mt.loc[mt.policy == "Whole flock every 60 days", "deaths_per_100_goat_years"].iloc[0])
+    mc_lim = analyse(mt, limits={"deaths_per_100_goat_years": death_limit})
+
     pol_raw2, _ = policy_comparison("uyo_like", pol_seeds, triage=(model, thr))
     summ2 = summarise_policies(pol_raw2)
     summ2.to_csv(out / "policy_summary_se_nigeria_like.csv", index=False)
     fig_policies(summ2, out, "SE Nigeria-like site", "fig3b_policy_tradeoffs_se_nigeria_like.png")
+    mt2 = mean_table(summ2)
+    mc2 = analyse(mt2)
+    lim2 = float(mt2.loc[mt2.policy == "Whole flock every 60 days", "deaths_per_100_goat_years"].iloc[0])
+    mc2_lim = analyse(mt2, limits={"deaths_per_100_goat_years": lim2})
+    fig_tradeoffs(mc2, out, "SE Nigeria-like site", "fig6b_multicriteria_se_nigeria_like.png")
 
     results = {
         "notice": SYNTHETIC_NOTICE,
@@ -237,6 +292,10 @@ def main():
         "shift_test": shift.to_dict(orient="records"),
         "policy_summary_malawi_like": summ.to_dict(orient="records"),
         "policy_summary_se_nigeria_like": summ2.to_dict(orient="records"),
+        "multicriteria_malawi_like": mc,
+        "multicriteria_se_nigeria_like": mc2,
+        "multicriteria_malawi_like_death_limit": mc_lim,
+        "multicriteria_se_nigeria_like_death_limit": mc2_lim,
     }
     (out / "results.json").write_text(json.dumps(results, indent=2, default=float))
     print(json.dumps({k: results[k] for k in ("runtime_s", "training_checks", "training_prevalence", "triage_threshold")}, indent=2))
@@ -244,6 +303,11 @@ def main():
     print(shift.round(3).to_string())
     print(summ.round(2).to_string())
     print(summ2.round(2).to_string())
+    for lab, m in (("Malawi-like", mc), ("SE Nigeria-like", mc2), ("Malawi-like + limit", mc_lim),
+                   ("SE Nigeria-like + limit", mc2_lim)):
+        print(lab, "pareto:", [p for p, k in zip(m["policies"], m["pareto"]) if k])
+        print(lab, "first by method:", {k: v["first"] for k, v in m["by_method"].items()})
+        print(lab, m["explanation"]["text"])
 
 
 if __name__ == "__main__":

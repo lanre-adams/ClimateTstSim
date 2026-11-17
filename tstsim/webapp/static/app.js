@@ -6,7 +6,8 @@
   const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
   const main = $("#main");
   const charts = {};
-  const state = { info: null, datasets: [], climate: { ids: [], warming: 0, focus: null }, lastSim: null };
+  const state = { info: null, datasets: [], climate: { ids: [], warming: 0, focus: null }, lastSim: null, lastSimJob: null,
+    trade: { method: "minmax", weights: null, limit: false, a: null, b: null } };
   const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
   // ------------------------------------------------------------------ helpers
@@ -60,6 +61,14 @@
     el.hidden = false;
     $("span", el).style.width = `${Math.round(100 * (j.progress || 0))}%`;
     $("[data-msg]", el).textContent = j.status === "done" ? "Finished" : j.message || "";
+  }
+
+  function downloadBar(base, extra = "", label = "Download report") {
+    const q = extra ? `&${extra}` : "";
+    return `<div class="downloads" role="group" aria-label="${esc(label)}"><span class="small muted">${esc(label)}:</span>
+      <a class="button small" href="${base}?format=html${q}" download>HTML report</a>
+      <a class="button quiet small" href="${base}?format=csv${q}" download>CSV table</a>
+      <a class="button quiet small" href="${base}?format=json${q}" download>JSON (all results)</a></div>`;
   }
 
   function errorBox(msg) { return `<div class="notice error"><p>${esc(msg)}</p></div>`; }
@@ -148,7 +157,7 @@
       <ol class="steps">
         <li><a href="#datasets">Add or pick a dataset.</a> Upload daily weather for a place, upload goat check records, or generate a synthetic site.</li>
         <li><a href="#climate">Look at its climate.</a> See when temperature and moisture favour worm larvae, and what +2 °C would change.</li>
-        <li><a href="#simulate">Run a simulation.</a> Compare treatment policies on deaths, doses, checking time and drug resistance.</li>
+        <li><a href="#simulate">Run a simulation.</a> Compare treatment policies on deaths, anaemia, doses, labour and drug resistance, then weigh the trade-offs and download a report.</li>
         <li><a href="#checks">Test which checks matter.</a> Score indicator sets on check records, and see whether a triage rule trained in one place works in another.</li>
       </ol>
       <h2>Last batch run</h2>
@@ -162,11 +171,12 @@
     box.innerHTML = `
       <p class="muted small">From <code>scripts/run_all.py</code>${results.quick ? " in quick mode" : ""}; Malawi-like synthetic site, ${results.seeds.policy.length} replicates. Means with 5th–95th percentiles.</p>
       <div class="table-wrap"><table>
-        <thead><tr><th>Policy</th><th class="num">Deaths per 100 goat-years</th><th class="num">Doses per goat-year</th><th class="num">Check minutes per goat-year</th><th class="num">Resistant share at end</th></tr></thead>
+        <thead><tr><th>Policy</th><th class="num">Deaths per 100 goat-years</th><th class="num">Anaemic goat-days</th><th class="num">Doses per goat-year</th><th class="num">Labour minutes per goat-year</th><th class="num">Resistant share at end</th></tr></thead>
         <tbody>${pol.map((r) => `<tr><td>${esc(r.policy)}</td>
           <td class="num">${fmt(r.deaths_per_100_goat_years_mean, 1)} <span class="muted small">(${fmt(r.deaths_per_100_goat_years_p05, 1)}–${fmt(r.deaths_per_100_goat_years_p95, 1)})</span></td>
+          <td class="num">${fmt(r.pct_goat_days_anaemic_mean, 1)}%</td>
           <td class="num">${fmt(r.treatments_per_goat_year_mean, 2)}</td>
-          <td class="num">${fmt(r.check_minutes_per_goat_year_mean, 0)}</td>
+          <td class="num">${fmt(r.labour_minutes_per_goat_year_mean, 0)}</td>
           <td class="num">${fmt(r.final_resistant_frac_mean, 2)}</td></tr>`).join("")}</tbody>
       </table></div>
       <div class="grid2" style="margin-top:20px">
@@ -174,6 +184,7 @@
         <figure><img src="/outputs/fig3_policy_tradeoffs.png" alt="Policy trade-offs: deaths, doses, check minutes and resistance"><figcaption>Policy trade-offs at the Malawi-like site.</figcaption></figure>
         <figure><img src="/outputs/fig2_indicator_value_for_effort.png" alt="Indicator sets compared by discrimination and effort"><figcaption>What each set of checks buys, sorted by effort.</figcaption></figure>
         <figure><img src="/outputs/fig5_shift_test.png" alt="Triage model tested on other climates"><figcaption>A triage rule trained on one site, tested on others.</figcaption></figure>
+        <figure><img src="/outputs/fig6_multicriteria_malawi_like.png" alt="Multi-criteria view of the policies" onerror="this.parentElement.hidden=true"><figcaption>Multi-criteria view: scaled outcomes and how often each policy ranks first.</figcaption></figure>
       </div>`;
   }
 
@@ -426,7 +437,8 @@
         <div class="panel"><p class="chart-title">Mean temperature by month</p><div class="chart-box short"><canvas id="ch-temp"></canvas></div></div>
         <div class="panel"><p class="chart-title">Rainfall by month</p><div class="chart-box short"><canvas id="ch-rainm"></canvas></div></div>
       </div>
-      ${data.some((d) => d.synthetic) ? `<p class="small muted">Synthetic datasets show an illustrative monthly shape, not measured climate.</p>` : ""}`;
+      ${data.some((d) => d.synthetic) ? `<p class="small muted">Synthetic datasets show an illustrative monthly shape, not measured climate.</p>` : ""}
+      ${downloadBar(`/api/climate/${focus.id}/report`, `warming=${state.climate.warming}`, `Download report for ${clip(focus.name, 40)}`)}`;
     if ($("#cl-focus")) $("#cl-focus").addEventListener("change", (e) => { state.climate.focus = e.target.value; loadClimate(); });
 
     const bandLine = (v, label) => ({ label, data: Array(12).fill(v), borderColor: css("--rule-strong"), borderDash: [5, 4], borderWidth: 1, pointRadius: 0, fill: false });
@@ -477,7 +489,7 @@
     const pre = q.get("w") || (weather[0] || {}).id;
     main.innerHTML = `
       <h1>Simulate treatment policies</h1>
-      <p class="lede">Runs simulated smallholder goat flocks on a chosen weather record and compares how each policy trades deaths against doses, checking time and drug resistance. Each replicate is a different random flock on the same weather.</p>
+      <p class="lede">Runs simulated smallholder goat flocks on a chosen weather record and compares how each policy trades deaths and anaemia against drug doses, labour and drug resistance. Each replicate is a different random flock on the same weather. Afterwards you can weigh the trade-offs and download a report.</p>
       <div class="panel"><form id="f-sim">
         <div class="form-grid">
           <div class="field"><label for="sim-w">Weather</label><select id="sim-w" required>${options(weather, pre)}</select></div>
@@ -524,6 +536,8 @@
         const job = await postJSON("/api/simulate", body);
         const res = await poll(job, (j) => setProgress("sim-prog", j));
         state.lastSim = res;
+        state.lastSimJob = job.id;
+        state.trade.a = state.trade.b = null;
         renderSim(res);
       } catch (err) { $("#sim-out").innerHTML = errorBox(err.message); }
       $("#sim-run").disabled = false;
@@ -542,23 +556,27 @@
       <div class="grid2">
         <div class="panel"><p class="chart-title">Deaths per 100 goat-years</p><div class="chart-box short"><canvas id="sim-d"></canvas></div></div>
         <div class="panel"><p class="chart-title">Anthelmintic doses per goat-year</p><div class="chart-box short"><canvas id="sim-t"></canvas></div></div>
-        <div class="panel"><p class="chart-title">Checking time, minutes per goat-year</p><div class="chart-box short"><canvas id="sim-m"></canvas></div></div>
+        <div class="panel"><p class="chart-title">Labour, minutes per goat-year</p><p class="chart-sub">Checking time plus about 2 minutes per dose.</p><div class="chart-box short"><canvas id="sim-m"></canvas></div></div>
         <div class="panel"><p class="chart-title">Resistant share of worms at the end</p><div class="chart-box short"><canvas id="sim-r"></canvas></div></div>
+        <div class="panel"><p class="chart-title">Goat-days spent anaemic, %</p><p class="chart-sub">A welfare measure: how much of the time goats are anaemic.</p><div class="chart-box short"><canvas id="sim-a"></canvas></div></div>
       </div>
       <div class="table-wrap"><table>
-        <thead><tr><th>Policy</th><th class="num">Deaths /100 goat-yr</th><th class="num">Doses /goat-yr</th><th class="num">Check min /goat-yr</th><th class="num">Goat-days anaemic</th><th class="num">Resistant share</th></tr></thead>
-        <tbody>${s.map((x) => `<tr><td>${esc(x.policy)}</td>${["deaths_per_100_goat_years", "treatments_per_goat_year", "check_minutes_per_goat_year", "pct_goat_days_anaemic", "final_resistant_frac"].map((m, i) => {
-          const d = [1, 2, 0, 1, 2][i];
+        <thead><tr><th>Policy</th><th class="num">Deaths /100 goat-yr</th><th class="num">Doses /goat-yr</th><th class="num">Check min /goat-yr</th><th class="num">Labour min /goat-yr</th><th class="num">Goat-days anaemic</th><th class="num">Resistant share</th></tr></thead>
+        <tbody>${s.map((x) => `<tr><td>${esc(x.policy)}</td>${["deaths_per_100_goat_years", "treatments_per_goat_year", "check_minutes_per_goat_year", "labour_minutes_per_goat_year", "pct_goat_days_anaemic", "final_resistant_frac"].map((m, i) => {
+          const d = [1, 2, 0, 0, 1, 2][i];
           const suffix = m === "pct_goat_days_anaemic" ? "%" : "";
           return `<td class="num">${fmt(x[m].mean, d)}${suffix}${st.replicates > 1 ? `<div class="small muted">${fmt(x[m].p05, d)}–${fmt(x[m].p95, d)}</div>` : ""}</td>`;
         }).join("")}</tr>`).join("")}</tbody></table></div>
       <div class="panel"><p class="chart-title">Resistant share of adult worms over time</p><p class="chart-sub">Weekly mean across replicates.</p><div class="chart-box"><canvas id="sim-rt"></canvas></div></div>
       <div class="panel"><p class="chart-title">Goats needing treatment over time</p><p class="chart-sub">Percent of live goats that are anaemic or carry a heavy burden.</p><div class="chart-box short"><canvas id="sim-nt"></canvas></div>
-        <p class="chart-title" style="margin-top:14px">Transmission index for the same weeks</p><div class="chart-box short" style="height:130px"><canvas id="sim-tpi"></canvas></div></div>`;
+        <p class="chart-title" style="margin-top:14px">Transmission index for the same weeks</p><div class="chart-box short" style="height:130px"><canvas id="sim-tpi"></canvas></div></div>
+      <div id="trade"></div>
+      <div id="sim-dl"></div>`;
     const tip = (m, d) => (c) => { const x = s[c.dataIndex][m]; return `${fmt(x.mean, d)} (5th–95th: ${fmt(x.p05, d)}–${fmt(x.p95, d)})`; };
     hbar("sim-d", labels, s.map((x) => x.deaths_per_100_goat_years.mean), { label: tip("deaths_per_100_goat_years", 1), min: 0 });
     hbar("sim-t", labels, s.map((x) => x.treatments_per_goat_year.mean), { label: tip("treatments_per_goat_year", 2), min: 0 });
-    hbar("sim-m", labels, s.map((x) => x.check_minutes_per_goat_year.mean), { label: tip("check_minutes_per_goat_year", 0), min: 0 });
+    hbar("sim-m", labels, s.map((x) => x.labour_minutes_per_goat_year.mean), { label: tip("labour_minutes_per_goat_year", 0), min: 0 });
+    hbar("sim-a", labels, s.map((x) => x.pct_goat_days_anaemic.mean), { label: tip("pct_goat_days_anaemic", 1), min: 0 });
     hbar("sim-r", labels, s.map((x) => x.final_resistant_frac.mean), { label: tip("final_resistant_frac", 2), min: 0, max: 1 });
     const keys = s.map((x) => x.key);
     const first = r.series[keys[0]];
@@ -567,6 +585,114 @@
     draw("sim-rt", { type: "line", data: { labels: first.dates, datasets: lines("resistant") }, options: { interaction: { mode: "index", intersect: false }, scales: { x: xopts, y: { min: 0, max: 1, title: { display: true, text: "Resistant share" } } } } });
     draw("sim-nt", { type: "line", data: { labels: first.dates, datasets: lines("need") }, options: { interaction: { mode: "index", intersect: false }, scales: { x: xopts, y: { min: 0, title: { display: true, text: "% of goats" } } } } });
     draw("sim-tpi", { type: "line", data: { labels: r.tpi.dates, datasets: [{ label: "Transmission index", data: r.tpi.values, borderColor: css("--muted"), borderWidth: 1.5, pointRadius: 0 }] }, options: { plugins: { legend: { display: false } }, scales: { x: xopts, y: { min: 0 } } } });
+    if (s.length >= 2) renderTradeForm(r); else updateSimDownloads();
+  }
+
+  // ------------------------------------------------------------------ trade-offs
+  const OBJ = () => state.info.objectives;
+  function tradeQuery() {
+    const t = state.trade;
+    const parts = [`method=${t.method}`, `weights=${t.weights.join(",")}`];
+    if (t.limit && state.lastSim) {
+      const wf = state.lastSim.summary.find((x) => x.key === "whole60");
+      if (wf) parts.push(`limit_deaths_per_100_goat_years=${wf.deaths_per_100_goat_years.mean.toFixed(4)}`);
+    }
+    return parts.join("&");
+  }
+  function updateSimDownloads() {
+    const box = $("#sim-dl");
+    if (!box || !state.lastSimJob) return;
+    const extra = state.trade.weights && state.lastSim.summary.length >= 2 ? tradeQuery() : "";
+    box.innerHTML = `<h2>Download</h2><p class="small muted">The report includes the settings, every outcome with its range, charts, and the trade-off analysis with the scaling, weights and limit chosen above. Open the HTML report in a browser and use Print to save it as PDF.</p>${downloadBar(`/api/jobs/${state.lastSimJob}/report`, extra)}`;
+  }
+
+  function renderTradeForm(r) {
+    const objs = OBJ();
+    if (!state.trade.weights || state.trade.weights.length !== objs.length) state.trade.weights = objs.map(() => 1);
+    const hasWhole = r.summary.some((x) => x.key === "whole60");
+    $("#trade").innerHTML = `
+      <h2>Weigh the trade-offs</h2>
+      <p class="lede" style="font-size:15px">Treat each policy as an option and each outcome as a separate goal. Choose how outcomes are put on a common scale and how much each matters, then see which policy comes out on top, how robust that is, and why.</p>
+      <div class="panel">
+        <div class="form-grid">
+          <div class="field"><label for="tr-method">How outcomes are scaled</label><select id="tr-method">${Object.entries(state.info.methods).map(([k, v]) => `<option value="${k}" ${k === state.trade.method ? "selected" : ""}>${esc(v.split(":")[0])}</option>`).join("")}</select>
+            <span class="hint" id="tr-method-help"></span></div>
+          ${hasWhole ? `<div class="field"><span class="label">Hard limit <span class="hint">optional</span></span><label class="check"><input type="checkbox" id="tr-limit" ${state.trade.limit ? "checked" : ""}> Rule out any policy with more deaths than whole-flock treatment (current practice)</label></div>` : ""}
+        </div>
+        <p class="label" style="margin:14px 0 6px">How much each outcome matters</p>
+        <div class="weights">${objs.map((o, i) => `<div class="field"><label for="tr-w${i}">${esc(o.label)} <span class="hint">${esc(o.theme)} · <output id="tr-wv${i}"></output></span></label>
+          <input id="tr-w${i}" type="range" min="0" max="5" step="0.5" value="${state.trade.weights[i]}" data-i="${i}"></div>`).join("")}</div>
+        <div class="actions"><button type="button" class="quiet small" id="tr-reset">Equal weights</button></div>
+      </div>
+      <div id="tr-out"><p class="muted">Calculating…</p></div>`;
+    const showW = () => {
+      const tot = state.trade.weights.reduce((a, b) => a + b, 0) || 1;
+      objs.forEach((_, i) => { $(`#tr-wv${i}`).textContent = `${Math.round((100 * state.trade.weights[i]) / tot)}%`; });
+      $("#tr-method-help").textContent = state.info.methods[state.trade.method].split(": ")[1] || "";
+    };
+    showW();
+    $("#tr-method").addEventListener("change", (e) => { state.trade.method = e.target.value; showW(); loadTrade(); });
+    if ($("#tr-limit")) $("#tr-limit").addEventListener("change", (e) => { state.trade.limit = e.target.checked; state.trade.a = state.trade.b = null; loadTrade(); });
+    $$(".weights input").forEach((el) => {
+      el.addEventListener("input", () => { state.trade.weights[+el.dataset.i] = +el.value; showW(); });
+      el.addEventListener("change", loadTrade);
+    });
+    $("#tr-reset").addEventListener("click", () => {
+      state.trade.weights = objs.map(() => 1);
+      $$(".weights input").forEach((el) => { el.value = 1; });
+      showW(); loadTrade();
+    });
+    loadTrade();
+  }
+
+  async function loadTrade() {
+    const out = $("#tr-out");
+    if (!out) return;
+    const t = state.trade;
+    if (t.weights.every((w) => w === 0)) { out.innerHTML = errorBox("Give at least one outcome a weight above zero."); return; }
+    const body = { job_id: state.lastSimJob, summary: state.lastSimJob ? null : state.lastSim.summary, method: t.method, weights: t.weights };
+    if (t.limit) {
+      const wf = state.lastSim.summary.find((x) => x.key === "whole60");
+      if (wf) body.limits = { deaths_per_100_goat_years: wf.deaths_per_100_goat_years.mean };
+    }
+    if (t.a !== null && t.b !== null && t.a !== t.b) body.compare = [t.a, t.b];
+    let m;
+    try { m = await postJSON("/api/tradeoffs", body); }
+    catch (e) {
+      if (/Job not found/.test(e.message) && state.lastSim) { state.lastSimJob = null; return loadTrade(); }
+      out.innerHTML = errorBox(e.message); updateSimDownloads(); return;
+    }
+    const objs = m.objectives;
+    const order = m.ranking.map((p) => m.policies.indexOf(p));
+    const maxS = Math.max(...m.scores, 1e-9);
+    const meths = Object.keys(m.by_method);
+    const exp = m.explanation;
+    out.innerHTML = `
+      ${m.excluded.length ? `<div class="notice"><p><strong>Ruled out by the limit:</strong> ${m.excluded.map((x) => `${esc(x.policy)} (${esc(x.reason)})`).join("; ")}.</p></div>` : ""}
+      <div class="grid2">
+        <div class="panel"><p class="chart-title">Ranking with these settings</p><p class="chart-sub">Weighted score from 0 (worst) to 1 (best). ★ = Pareto-optimal: nothing beats it on every outcome.</p>
+          <ol class="rank">${order.map((i, k) => `<li><span class="rank-name">${m.pareto[i] ? "★ " : ""}${esc(m.policies[i])}</span>
+            <span class="rank-bar"><span style="width:${(100 * m.scores[i]) / maxS}%;background:${k === 0 ? css("--accent") : css("--rule-strong")}"></span></span>
+            <span class="rank-val">${fmt(m.scores[i], 3)}</span></li>`).join("")}</ol></div>
+        <div class="panel"><p class="chart-title">Why is one ranked above another?</p>
+          <div class="form-grid" style="margin-bottom:8px">
+            <div class="field"><label for="tr-a">Compare</label><select id="tr-a">${m.policies.map((p, i) => `<option value="${i}" ${i === exp.winner ? "selected" : ""}>${esc(p)}</option>`).join("")}</select></div>
+            <div class="field"><label for="tr-b">with</label><select id="tr-b">${m.policies.map((p, i) => `<option value="${i}" ${i === exp.loser ? "selected" : ""}>${esc(p)}</option>`).join("")}</select></div>
+          </div>
+          <div class="notice ok"><p>${esc(exp.text)}</p></div>
+          ${exp.against.length ? `<p class="small"><strong>Arguments against ${esc(exp.winner_name)}:</strong></p><ul class="small">${exp.against.map((x) => `<li>${esc(exp.loser_name)} is better on ${esc(x.objective.toLowerCase())}. It would win if ${esc(x.objective.toLowerCase())} carried at least ${fmt(100 * x.flip_weight_share, 0)}% of the weight.</li>`).join("")}</ul>` : ""}
+        </div>
+      </div>
+      <div class="panel"><p class="chart-title">Does the scaling method change the answer?</p><p class="chart-sub">“First with these weights” uses the sliders above. The percentages show how often each policy ranks first across 4,000 random weightings, which tells you how robust a recommendation is when nobody agrees on the weights.</p>
+        <div class="table-wrap"><table><thead><tr><th>Scaling</th><th>First with these weights</th>${m.policies.map((p) => `<th class="num">${esc(clip(p, 26))}</th>`).join("")}</tr></thead>
+        <tbody>${meths.map((k) => `<tr${k === m.method ? ' class="hl"' : ""}><td>${esc(state.info.methods[k].split(":")[0])}</td><td>${esc(m.by_method[k].first)}</td>${m.by_method[k].acceptability.map((a) => `<td class="num">${fmt(100 * a, 0)}%</td>`).join("")}</tr>`).join("")}</tbody></table></div></div>
+      <div class="panel"><p class="chart-title">Scaled scores by outcome</p><p class="chart-sub">1 = best on that outcome, 0 = worst, using the chosen scaling. Raw values underneath.</p>
+        <div class="table-wrap"><table><thead><tr><th>Policy</th>${objs.map((o) => `<th class="num">${esc(o.label)}</th>`).join("")}</tr></thead>
+        <tbody>${m.policies.map((p, i) => `<tr><td>${m.pareto[i] ? "★ " : ""}${esc(p)}</td>${objs.map((o, j) => `<td class="num heat" style="--h:${m.goodness[i][j]}">${fmt(m.goodness[i][j], 2)}<div class="small muted">${fmt(m.values[i][j], o.digits)}</div></td>`).join("")}</tr>`).join("")}</tbody></table></div></div>`;
+    const pick = () => { t.a = +$("#tr-a").value; t.b = +$("#tr-b").value; if (t.a !== t.b) loadTrade(); };
+    $("#tr-a").addEventListener("change", pick);
+    $("#tr-b").addEventListener("change", pick);
+    updateSimDownloads();
   }
 
   // ================================================================== CHECKS
@@ -609,7 +735,7 @@
       $("#ind-run").disabled = true; $("#ind-out").innerHTML = "";
       try {
         const job = await postJSON("/api/indicators", { dataset_id: $("#ind-ds").value });
-        renderIndicators(await poll(job, (j) => setProgress("ind-prog", j)));
+        renderIndicators(await poll(job, (j) => setProgress("ind-prog", j)), job.id);
       } catch (err) { $("#ind-out").innerHTML = errorBox(err.message); }
       $("#ind-run").disabled = false;
     });
@@ -618,13 +744,13 @@
       $("#tri-run").disabled = true; $("#tri-out").innerHTML = "";
       try {
         const job = await postJSON("/api/triage", { train_id: $("#tri-train").value, test_ids: $$("input[name=tri-test]:checked").map((c) => c.value), target_sensitivity: +$("#tri-sens").value });
-        renderTriage(await poll(job, (j) => setProgress("tri-prog", j)));
+        renderTriage(await poll(job, (j) => setProgress("tri-prog", j)), job.id);
       } catch (err) { $("#tri-out").innerHTML = errorBox(err.message); }
       $("#tri-run").disabled = false;
     });
   }
 
-  function renderIndicators(r) {
+  function renderIndicators(r, jobId) {
     const rows = r.rows;
     const circular = r.dataset.source === "simulated" ? `<div class="notice"><p>These records come from the simulator, where “need” is defined mostly by anaemia, so FAMACHA is favoured by construction. Treat the ranking as a test of the method; real field records are needed to answer the question.</p></div>` : "";
     $("#ind-out").innerHTML = `
@@ -633,18 +759,20 @@
       <div class="panel"><p class="chart-title">Discrimination by indicator set, cheapest first</p><p class="chart-sub">AUROC: 0.5 = no better than chance, 1 = perfect ranking.</p>
         <div class="chart-box" style="height:${80 + rows.length * 34}px"><canvas id="ind-ch"></canvas></div></div>
       <div class="table-wrap"><table><thead><tr><th>Indicator set</th><th class="num">Minutes per goat</th><th class="num">AUROC</th><th class="num">Sensitivity at 80% specificity</th><th class="num">Brier score</th><th>Best value for effort</th></tr></thead>
-        <tbody>${rows.map((x) => `<tr><td>${esc(x.indicator_set)}</td><td class="num">${fmt(x.minutes_per_check, 1)}</td><td class="num">${fmt(x.auroc, 3)}</td><td class="num">${fmt(x.sens_at_spec80, 2)}</td><td class="num">${fmt(x.brier, 3)}</td><td>${x.pareto ? "Yes" : ""}</td></tr>`).join("")}</tbody></table></div>`;
+        <tbody>${rows.map((x) => `<tr><td>${esc(x.indicator_set)}</td><td class="num">${fmt(x.minutes_per_check, 1)}</td><td class="num">${fmt(x.auroc, 3)}</td><td class="num">${fmt(x.sens_at_spec80, 2)}</td><td class="num">${fmt(x.brier, 3)}</td><td>${x.pareto ? "Yes" : ""}</td></tr>`).join("")}</tbody></table></div>
+      ${jobId ? downloadBar(`/api/jobs/${jobId}/report`) : ""}`;
     hbar("ind-ch", rows.map((x) => `${x.indicator_set} (${fmt(x.minutes_per_check, 1)} min)`), rows.map((x) => x.auroc), { min: 0.4, max: 1, digits: 3, xTitle: "AUROC" });
   }
 
-  function renderTriage(r) {
+  function renderTriage(r, jobId) {
     const rows = r.rows;
     $("#tri-out").innerHTML = `
       <p class="small muted">Indicators used: ${r.features.map(esc).join(", ")}. Threshold ${fmt(r.threshold, 3)} chosen for ${pct(r.target_sensitivity, 0)} sensitivity on the training records.</p>
       <div class="table-wrap"><table><thead><tr><th>Dataset</th><th class="num">Checks</th><th class="num">Observed need</th><th class="num">Mean predicted</th><th class="num">AUROC</th><th class="num">Sensitivity</th><th class="num">Specificity</th></tr></thead>
         <tbody>${rows.map((x) => `<tr><td>${esc(x.test_set)} ${x.synthetic ? `<span class="tag syn">Synthetic</span>` : `<span class="tag real">Real</span>`}</td><td class="num">${x.n_checks.toLocaleString()}</td><td class="num">${pct(x.observed_rate)}</td><td class="num">${pct(x.mean_predicted)}</td><td class="num">${fmt(x.auroc, 3)}</td><td class="num">${fmt(x.sensitivity, 2)}</td><td class="num">${fmt(x.specificity, 2)}</td></tr>`).join("")}</tbody></table></div>
       <div class="panel"><p class="chart-title">Sensitivity and specificity at the training threshold</p><div class="chart-box" style="height:${100 + rows.length * 48}px"><canvas id="tri-ch"></canvas></div></div>
-      <details><summary>Model coefficients (standardised)</summary><div class="table-wrap" style="margin-top:8px"><table><tbody>${Object.entries(r.coefficients).map(([k, v]) => `<tr><td>${esc(k)}</td><td class="num">${fmt(v, 3)}</td></tr>`).join("")}</tbody></table></div></details>`;
+      <details><summary>Model coefficients (standardised)</summary><div class="table-wrap" style="margin-top:8px"><table><tbody>${Object.entries(r.coefficients).map(([k, v]) => `<tr><td>${esc(k)}</td><td class="num">${fmt(v, 3)}</td></tr>`).join("")}</tbody></table></div></details>
+      ${jobId ? downloadBar(`/api/jobs/${jobId}/report`) : ""}`;
     draw("tri-ch", {
       type: "bar",
       data: {
